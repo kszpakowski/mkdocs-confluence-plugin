@@ -40,7 +40,6 @@ def create_content(space, title, body, parent):
 
 ## TODO pass page content as html
 def create_page(space, title, html, parent=None):
-    print(f"Creating page: {title} in space {space}. Parent: {parent}")
     body =  {
                 'storage': {
                     'value': html,
@@ -51,8 +50,6 @@ def create_page(space, title, html, parent=None):
 
 
 def create_section(space, title, parent=None):
-    print(f"Creating section: {title} in space {space}. Parent: {parent}")
-    
     body = {
                 'wiki': {
                     'value': '{pageTree:root=@self}',
