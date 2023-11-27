@@ -2,39 +2,48 @@ import logging
 import requests
 from md2cf.confluence_renderer import ConfluenceRenderer
 import mistune
+import types
 
 log = logging.getLogger('mkdocs')
+
+confluence_mistune = mistune.Markdown(renderer=ConfluenceRenderer(use_xhtml=True))
 
 session = requests.Session()
 session.auth = ("admin", "admin")
 
+class Actions:
+    CREATE_CONTENT = 'CREATE_CONTENT'
+    UPDATE_CONTENT = 'UPDATE_CONTENT'
+    DELETE_CONTENT = 'DELETE_CONTENT'
+
+existing_pages=[]
+plan = []
+
+# Config
 space= "DOK"
 title = "mkdocs3"
 baseUrl = "http://localhost:8090/rest/api/content"
+dryRun = False
 
-confluence_mistune = mistune.Markdown(renderer=ConfluenceRenderer(use_xhtml=True))
-
-existing_pages=[]
 
 # plugin handlers
 
 def on_nav(nav, config, files):
-    print('--on nav')
     for n in nav:
         handleNav(n)
    
 def on_page_markdown(markdown,page,config,files):
-    print("--on_page_markdown")
     content = confluence_mistune(markdown)
     upsert_page(space, page.title, content, page.parent.title if page.parent else None)
     return markdown
 
 def on_post_build(config):
     pages_in_conflu = find_space_children(space)
-    pages_to_remove = [ page for page in pages_in_conflu if page not in existing_pages ]
+    pages_to_remove = [ page for page in pages_in_conflu if page["id"] not in existing_pages ]
     for page in pages_to_remove:
-        delete_page(page)
-    
+        plan.append({'action': Actions.DELETE_CONTENT, 'space': space, 'page':page})
+
+    executePlan()
 
 # ...
 
@@ -43,17 +52,33 @@ def handleNav(nav):
         handleSection(nav)
 
 def handleSection(s):
-    print(f'Section title: {s.title}{ f", parent: {s.parent.title}" if s.parent else ""}')
-    create_or_update_section(space, s.title,s.parent.title if s.parent else None)
+    upsert_section(space, s.title,s.parent.title if s.parent else None)
     for n in s.children:
         handleNav(n)
+
+
+def executePlan():
+    for action in plan:
+        match action["action"]:
+            case Actions.CREATE_CONTENT:
+                print(f'Create: {action["title"]} with parent {action["parent"]}')
+                if not dryRun:
+                    create_content(action["space"], action["title"], action["body"], action["parent"])
+            case Actions.UPDATE_CONTENT:
+                print(f'Update: {action["page"]["title"]} with parent {action["parent"]}')
+                if not dryRun:
+                    update_content(action["space"], action["page"], action["body"], action["parent"])
+            case Actions.DELETE_CONTENT:
+                print(f'Delete: {action["page"]["title"]}')
+                if not dryRun:
+                    delete_page(action["page"]["id"])
+
 
 # Conflu api
 
 
 # find page by it's title
 def get_page(title):
-    print(f"Getting id for page: {title}")
     url = f"{baseUrl}?title={title}&expand=version,ancestors"
     r = session.get(url)
     r.raise_for_status()
@@ -72,7 +97,6 @@ def get_page(title):
 
 # Create page or space
 def create_content(space, title, body, parent):
-    print(f"Creating content: {title} in space {space}. Parent: {parent}")
     url = f"{baseUrl}"
     json = {'title': title, 
             'type': 'page',
@@ -86,12 +110,10 @@ def create_content(space, title, body, parent):
     r = session.post(url, json=json)
     r.raise_for_status()
     id = r.json()["id"]
-    existing_pages.append(id)
     return id
 
 # Update page or space
 def update_content(space, page, body, parent):
-    print(f"Updating content: {page['title']} in space {space}. Parent: {parent}")
     url = f"{baseUrl}/{page['id']}"
 
     json = {
@@ -106,6 +128,7 @@ def update_content(space, page, body, parent):
         }
     }
 
+    # TODO this should move page to the collection root if parent is empty
     if parent:
         parent_page_id = get_page(parent)["id"]
         json["ancestors"] = [{"id": parent_page_id}]
@@ -113,7 +136,6 @@ def update_content(space, page, body, parent):
     r = session.put(url, json=json)
     r.raise_for_status()
     id = r.json()["id"]
-    existing_pages.append(id)
     return id
 
 def upsert_page(space, title, html, parent=None):
@@ -126,13 +148,13 @@ def upsert_page(space, title, html, parent=None):
 
     page = get_page(title)
     if page:
-        print(f'Page {title} already exists')
-        update_content(space,page,body,parent)
+        existing_pages.append(page["id"])
+        plan.append({'action': Actions.UPDATE_CONTENT, 'space': space, 'page':page, 'body':body, 'parent':parent})
     else:
-        return create_content(space, title, body, parent)
+        plan.append({'action': Actions.CREATE_CONTENT, 'space': space, 'title':title, 'body':body, 'parent':parent})
 
 
-def create_or_update_section(space, title, parent=None):
+def upsert_section(space, title, parent=None):
     body = { 'wiki': {
                 'value': '{pageTree:root=@self}',
                 'representation': 'wiki'
@@ -140,20 +162,20 @@ def create_or_update_section(space, title, parent=None):
             }
     section = get_page(title)
     if section:
-        print(f'Section {title} already exists with id {section["id"]}')
-        update_content(space, section, body, parent)
+        existing_pages.append(section["id"])
+        plan.append({'action': Actions.UPDATE_CONTENT, 'space': space, 'page':section, 'body':body, 'parent':parent})
     else:
-        return create_content(space, title, body, parent)
+        plan.append({'action': Actions.CREATE_CONTENT, 'space': space, 'title':title, 'body':body, 'parent':parent})
     
 def find_space_children(id):
-    print(f"Searching children of page id {id}")
+    # print(f"Searching children of page id {id}")
     url = f"{baseUrl}/search?cql=space={id}"
     r = session.get(url)
     r.raise_for_status()
-    return [ page["id"] for page in r.json()["results"]]
+    return r.json()["results"]
 
 def delete_page(id):
-    print(f"Deleting page id {id}")
+    # print(f"Deleting page id {id}")
     url = f"{baseUrl}/{id}"
     r = session.delete(url)
     r.raise_for_status()
