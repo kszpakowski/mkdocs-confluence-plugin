@@ -14,7 +14,6 @@ baseUrl = "http://localhost:8090/rest/api/content"
 
 confluence_mistune = mistune.Markdown(renderer=ConfluenceRenderer(use_xhtml=True))
 
-# TODO track created or updated pages, to remove the rest of pages
 existing_pages=[]
 
 # plugin handlers
@@ -31,7 +30,11 @@ def on_page_markdown(markdown,page,config,files):
     return markdown
 
 def on_post_build(config):
-    print(f'Now we should delete old pages. Existing pages are {existing_pages}')
+    pages_in_conflu = find_space_children(space)
+    pages_to_remove = [ page for page in pages_in_conflu if page not in existing_pages ]
+    for page in pages_to_remove:
+        delete_page(page)
+    
 
 # ...
 
@@ -141,6 +144,19 @@ def create_or_update_section(space, title, parent=None):
         update_content(space, section, body, parent)
     else:
         return create_content(space, title, body, parent)
+    
+def find_space_children(id):
+    print(f"Searching children of page id {id}")
+    url = f"{baseUrl}/search?cql=space={id}"
+    r = session.get(url)
+    r.raise_for_status()
+    return [ page["id"] for page in r.json()["results"]]
+
+def delete_page(id):
+    print(f"Deleting page id {id}")
+    url = f"{baseUrl}/{id}"
+    r = session.delete(url)
+    r.raise_for_status()
 
 
 ## TODO add validation if all pages and sections have unique titles
